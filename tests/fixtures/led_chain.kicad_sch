@@ -1,0 +1,87 @@
+(kicad_sch (version 20231120) (generator "json_schem_sync") (generator_version "2.0") (uuid "a27970a8-6ae1-4bf0-be65-96f32d617cb7") (paper "A3") (lib_symbols 
+
+(symbol "generated:U_LED_A" (pin_names (offset 1.016)) (exclude_from_sim no) (in_bom yes) (on_board yes) 
+
+(property "Reference" "U" (at 0 5.08 0) (effects (font (size 1.27 1.27)))) 
+
+(property "Value" "U_LED_A" (at 0 -5.08 0) (effects (font (size 1.27 1.27)))) 
+
+(property "Footprint" "" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes))) 
+
+(property "Datasheet" "~" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes))) 
+
+(property "Description" "" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes))) 
+
+(symbol "U_LED_A_0_1" 
+
+(rectangle (start -7.62 3.81) (end 7.62 -3.81) (stroke (width 0.254) (type default)) (fill (type background)))) 
+
+(symbol "U_LED_A_1_1" (pin input line (at -10.16 1.27 0) (length 2.54) (name "IN" (effects (font (size 1.27 1.27)))) (number "1" (effects (font (size 1.27 1.27))))) (pin input line (at -10.16 -1.27 0) (length 2.54) (name "OUT" (effects (font (size 1.27 1.27)))) (number "2" (effects (font (size 1.27 1.27))))) (pin output line (at 10.16 1.27 180) (length 2.54) (name "GND" (effects (font (size 1.27 1.27)))) (number "3" (effects (font (size 1.27 1.27)))))))) 
+
+(wire (pts 
+
+(xy 42.38 51.27) 
+
+(xy 37.38 51.27)) (stroke (width 0) (type default)) (uuid "adc7a50a-2c93-44c1-9d6d-1dace5bd35d1")) (hierarchical_label "DATA_IN" (shape bidirectional) (at 37.38 51.27 0) (fields_autoplaced yes) (effects (font (size 1.27 1.27)) (justify left)) (uuid "dbe5ea5d-f941-4f36-af7f-073e5d72f868")) 
+
+(wire (pts 
+
+(xy 42.38 48.73) 
+
+(xy 37.38 48.73)) (stroke (width 0) (type default)) (uuid "ee7eb53c-c5d8-4252-851d-536fe0152190")) (hierarchical_label "DATA_OUT" (shape bidirectional) (at 37.38 48.73 0) (fields_autoplaced yes) (effects (font (size 1.27 1.27)) (justify left)) (uuid "2b3d88ca-09bc-46f6-8799-10f0d07cc709")) 
+
+(wire (pts 
+
+(xy 57.62 51.27) 
+
+(xy 62.62 51.27)) (stroke (width 0) (type default)) (uuid "ce186c46-e0c5-406e-bf76-51277d7f8290")) 
+
+(global_label "GND" (shape bidirectional) (at 62.62 51.27 0) (fields_autoplaced yes) (effects (font (size 1.27 1.27)) (justify left)) (uuid "a3550648-a1b2-4dee-8462-55be45693dc7") 
+
+(property "Intersheetrefs" "${INTERSHEET_REFS}" (at 63.62 51.27 0) (effects (font (size 1.27 1.27)) (hide yes)))) 
+
+(symbol (lib_id "generated:U_LED_A") (at 50.0 50.0 0) (unit 1) (exclude_from_sim no) (in_bom yes) (on_board yes) (dnp no) (fields_autoplaced yes) (uuid "43e38aab-5c5d-402a-bc77-e385f51d51e8") 
+
+(property "Reference" "U_LED_A" (at 50.0 42.38 0) (effects (font (size 1.27 1.27)))) 
+
+(property "Value" "LED-DRIVER" (at 50.0 39.84 0) (effects (font (size 1.27 1.27)))) 
+
+(property "Footprint" "" (at 50.0 50.0 0) (effects (font (size 1.27 1.27)) (hide yes))) 
+
+(property "Datasheet" "~" (at 50.0 50.0 0) (effects (font (size 1.27 1.27)) (hide yes))) 
+
+(property "Description" "Child test component" (at 50.0 50.0 0) (effects (font (size 1.27 1.27)) (hide yes))) 
+
+(property "MPN" "LED-DRIVER" (at 50.0 50.0 0) (effects (font (size 1.27 1.27)) (hide yes))) 
+
+(property "Notes" "Smoke-test child symbol." (at 50.0 50.0 0) (effects (font (size 1.27 1.27)) (hide yes))) (pin "1" (uuid "eb105354-edfc-438c-a398-e7abed11b6a1")) (pin "2" (uuid "b6c8bc28-1b64-4480-b8fa-d125fb0902cd")) (pin "3" (uuid "db54f527-102c-4c3d-9775-0d9e0a1a1c36")) (instances (project "hierarchy_root" (path "/a27970a8-6ae1-4bf0-be65-96f32d617cb7" (reference "U_LED_A") (unit 1))))) (sheet_instances (path "/" (page "1"))) 
+
+(wire (pts 
+
+(xy 39.84 48.73) 
+
+(xy 44.84 48.73)) (stroke (width 0) (type default)) (uuid f5b5feb7-1159-41b7-b5b3-c10975e3c878)) 
+
+(global_label "DATA_IN" (shape input) (at 44.84 48.73 180) (fields_autoplaced) (effects (font (size 1.27 1.27)) (justify right)) (uuid e65b0063-37e1-417a-8ba3-d8c0f1fc6d21) 
+
+(property "Intersheetrefs" "${INTERSHEET_REFS}" (at 38.5891 48.73 0) (effects (font (size 1.27 1.27)) (justify right) hide))) 
+
+(wire (pts 
+
+(xy 39.84 51.27) 
+
+(xy 44.84 51.27)) (stroke (width 0) (type default)) (uuid 66636d78-4162-4692-b99e-1e7b399817e0)) 
+
+(global_label "DATA_OUT" (shape input) (at 44.84 51.27 180) (fields_autoplaced) (effects (font (size 1.27 1.27)) (justify right)) (uuid 55722527-2f3e-4d43-887d-3ee5a6f3dcfb) 
+
+(property "Intersheetrefs" "${INTERSHEET_REFS}" (at 38.5891 51.27 0) (effects (font (size 1.27 1.27)) (justify right) hide))) 
+
+(wire (pts 
+
+(xy 60.16 48.73) 
+
+(xy 65.16 48.73)) (stroke (width 0) (type default)) (uuid d3578090-fd13-4922-b303-4a932ab1af1b)) 
+
+(global_label "GND" (shape input) (at 65.16 48.73 180) (fields_autoplaced) (effects (font (size 1.27 1.27)) (justify right)) (uuid c9185bea-2989-45b3-80fe-3f707f04bd25) 
+
+(property "Intersheetrefs" "${INTERSHEET_REFS}" (at 58.9091 48.73 0) (effects (font (size 1.27 1.27)) (justify right) hide))))

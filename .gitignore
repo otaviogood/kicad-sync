@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+
+# Manufacturer PDFs/renders — copyrighted, local cache only
+parts-library/datasheets/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+venv/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage

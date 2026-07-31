@@ -1,0 +1,137 @@
+(kicad_sch (version 20231120) (generator "json_schem_sync") (generator_version "2.0") (uuid "f0bc1e49-26c3-45db-94ef-1e0ff24f0555") (paper "A3") (lib_symbols 
+
+(symbol "generated:U_ROOT" (pin_names (offset 1.016)) (exclude_from_sim no) (in_bom yes) (on_board yes) 
+
+(property "Reference" "U" (at 0 5.08 0) (effects (font (size 1.27 1.27)))) 
+
+(property "Value" "U_ROOT" (at 0 -5.08 0) (effects (font (size 1.27 1.27)))) 
+
+(property "Footprint" "" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes))) 
+
+(property "Datasheet" "~" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes))) 
+
+(property "Description" "" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes))) 
+
+(symbol "U_ROOT_0_1" 
+
+(rectangle (start -7.62 3.81) (end 7.62 -3.81) (stroke (width 0.254) (type default)) (fill (type background)))) 
+
+(symbol "U_ROOT_1_1" (pin input line (at -10.16 1.27 0) (length 2.54) (name "GND" (effects (font (size 1.27 1.27)))) (number "1" (effects (font (size 1.27 1.27))))) (pin output line (at 10.16 1.27 180) (length 2.54) (name "DATA_OUT" (effects (font (size 1.27 1.27)))) (number "2" (effects (font (size 1.27 1.27)))))))) 
+
+(wire (pts 
+
+(xy 42.38 51.27) 
+
+(xy 37.38 51.27)) (stroke (width 0) (type default)) (uuid "cb8f9d8e-a810-43de-9c99-55ccfd747b0b")) 
+
+(global_label "GND" (shape bidirectional) (at 37.38 51.27 0) (fields_autoplaced yes) (effects (font (size 1.27 1.27)) (justify left)) (uuid "3588f9a3-f2b9-4585-a026-628e357573a1") 
+
+(property "Intersheetrefs" "${INTERSHEET_REFS}" (at 38.38 51.27 0) (effects (font (size 1.27 1.27)) (hide yes)))) 
+
+(wire (pts 
+
+(xy 57.62 51.27) 
+
+(xy 62.62 51.27)) (stroke (width 0) (type default)) (uuid "a30d6526-083e-4ced-b2f9-cde2a59d0270")) 
+
+(global_label "DATA_BUS" (shape bidirectional) (at 62.62 51.27 0) (fields_autoplaced yes) (effects (font (size 1.27 1.27)) (justify left)) (uuid "8756c34b-fb58-4847-bc6e-3caaffce566b") 
+
+(property "Intersheetrefs" "${INTERSHEET_REFS}" (at 63.62 51.27 0) (effects (font (size 1.27 1.27)) (hide yes)))) 
+
+(wire (pts 
+
+(xy 220.0 48.0) 
+
+(xy 214.0 48.0)) (stroke (width 0) (type default)) (uuid "3c61f10c-ac20-42f0-9a0e-ca88b6e627e8")) 
+
+(global_label "DATA_BUS" (shape bidirectional) (at 214.0 48.0 0) (fields_autoplaced yes) (effects (font (size 1.27 1.27)) (justify left)) (uuid "020a2d82-cbe4-4852-8f78-24e06af0f5c0") 
+
+(property "Intersheetrefs" "${INTERSHEET_REFS}" (at 215.0 48.0 0) (effects (font (size 1.27 1.27)) (hide yes)))) 
+
+(wire (pts 
+
+(xy 220.0 51.5) 
+
+(xy 214.0 51.5)) (stroke (width 0) (type default)) (uuid "5c450bfd-114e-43a9-8f81-09d32a0c1bbf")) 
+
+(label "CHAIN_A_OUT" (at 214.0 51.5 0) (effects (font (size 1.27 1.27)) (justify left)) (uuid "43965d7d-1e9a-4113-b4d0-858ae74069bf")) 
+
+(wire (pts 
+
+(xy 220.0 103.0) 
+
+(xy 214.0 103.0)) (stroke (width 0) (type default)) (uuid "b015c665-02ed-4405-961a-b4550f21aab8")) 
+
+(label "CHAIN_A_OUT" (at 214.0 103.0 0) (effects (font (size 1.27 1.27)) (justify left)) (uuid "def8dca8-f5ca-4db8-a225-c1c05cad3588")) 
+
+(wire (pts 
+
+(xy 220.0 106.5) 
+
+(xy 214.0 106.5)) (stroke (width 0) (type default)) (uuid "41f2b6a6-5034-42f0-baab-bc2de9828b12")) 
+
+(label "CHAIN_B_OUT" (at 214.0 106.5 0) (effects (font (size 1.27 1.27)) (justify left)) (uuid "19ee1db2-437a-4409-8f41-80d54c3549bd")) (sheet (at 220.0 40.0) (size 40.0 30.0) (fields_autoplaced yes) (stroke (width 0) (type solid)) (fill (color 0 0 0 0)) (uuid "7cbbb9e3-ae97-4bd6-8ba3-95d51da9e9ec") 
+
+(property "Sheet name" "LED_CHAIN_A" (at 221.0 41.5 0) (effects (font (size 1.27 1.27)))) 
+
+(property "Sheet file" "led_chain.kicad_sch" (at 221.0 45.0 0) (effects (font (size 1.27 1.27)))) (pin "DATA_IN" bidirectional (at 220.0 48.0 0) (effects (font (size 1.27 1.27)))) (pin "DATA_OUT" bidirectional (at 220.0 51.5 0) (effects (font (size 1.27 1.27))))) (sheet (at 220.0 95.0) (size 40.0 30.0) (fields_autoplaced yes) (stroke (width 0) (type solid)) (fill (color 0 0 0 0)) (uuid "6d4b121c-8918-4b0a-b265-88e744f7a535") 
+
+(property "Sheet name" "LED_CHAIN_B" (at 221.0 96.5 0) (effects (font (size 1.27 1.27)))) 
+
+(property "Sheet file" "led_chain.kicad_sch" (at 221.0 100.0 0) (effects (font (size 1.27 1.27)))) (pin "DATA_IN" bidirectional (at 220.0 103.0 0) (effects (font (size 1.27 1.27)))) (pin "DATA_OUT" bidirectional (at 220.0 106.5 0) (effects (font (size 1.27 1.27))))) 
+
+(symbol (lib_id "generated:U_ROOT") (at 50.0 50.0 0) (unit 1) (exclude_from_sim no) (in_bom yes) (on_board yes) (dnp no) (fields_autoplaced yes) (uuid "2531b889-25e7-4d06-8beb-2917785fdbe5") 
+
+(property "Reference" "U_ROOT" (at 50.0 42.38 0) (effects (font (size 1.27 1.27)))) 
+
+(property "Value" "ROOT-MCU" (at 50.0 39.84 0) (effects (font (size 1.27 1.27)))) 
+
+(property "Footprint" "" (at 50.0 50.0 0) (effects (font (size 1.27 1.27)) (hide yes))) 
+
+(property "Datasheet" "~" (at 50.0 50.0 0) (effects (font (size 1.27 1.27)) (hide yes))) 
+
+(property "Description" "Root test component" (at 50.0 50.0 0) (effects (font (size 1.27 1.27)) (hide yes))) 
+
+(property "MPN" "ROOT-MCU" (at 50.0 50.0 0) (effects (font (size 1.27 1.27)) (hide yes))) 
+
+(property "Notes" "Smoke-test root symbol." (at 50.0 50.0 0) (effects (font (size 1.27 1.27)) (hide yes))) (pin "1" (uuid "5e0f8654-29ff-4d79-97b5-95410f400a17")) (pin "2" (uuid "d743aeb2-ed56-4f91-be92-5b84e18fdf2d")) (instances (project "hierarchy_root" (path "/f0bc1e49-26c3-45db-94ef-1e0ff24f0555" (reference "U_ROOT") (unit 1))))) (sheet_instances (path "/" (page "1")) (path "/7cbbb9e3-ae97-4bd6-8ba3-95d51da9e9ec" (page "2")) (path "/6d4b121c-8918-4b0a-b265-88e744f7a535" (page "3"))) 
+
+(wire (pts 
+
+(xy 39.84 48.73) 
+
+(xy 44.84 48.73)) (stroke (width 0) (type default)) (uuid 9dcc7296-4abd-4406-b001-4e4a93c5f6d3)) 
+
+(global_label "GND" (shape input) (at 44.84 48.73 180) (fields_autoplaced) (effects (font (size 1.27 1.27)) (justify right)) (uuid 30b84ee3-6b9f-4352-8c01-34b14841012d) 
+
+(property "Intersheetrefs" "${INTERSHEET_REFS}" (at 38.5891 48.73 0) (effects (font (size 1.27 1.27)) (justify right) hide))) 
+
+(wire (pts 
+
+(xy 60.16 48.73) 
+
+(xy 65.16 48.73)) (stroke (width 0) (type default)) (uuid 8ceb85ab-467d-424b-b2c3-35b82a6c6eaf)) 
+
+(global_label "DATA_BUS" (shape input) (at 65.16 48.73 180) (fields_autoplaced) (effects (font (size 1.27 1.27)) (justify right)) (uuid 6dcbb918-093b-4251-b38d-124e56193f2a) 
+
+(property "Intersheetrefs" "${INTERSHEET_REFS}" (at 58.9091 48.73 0) (effects (font (size 1.27 1.27)) (justify right) hide))) 
+
+(wire (pts 
+
+(xy 39.84 48.73) 
+
+(xy 44.84 48.73)) (stroke (width 0) (type default)) (uuid dcf1d74e-80c0-4869-a0e1-862e13529afb)) 
+
+(global_label "GND" (shape input) (at 44.84 48.73 180) (fields_autoplaced) (effects (font (size 1.27 1.27)) (justify right)) (uuid 7b540d92-c3e3-4a89-9dc6-a1580d02878e) 
+
+(property "Intersheetrefs" "${INTERSHEET_REFS}" (at 38.5891 48.73 0) (effects (font (size 1.27 1.27)) (justify right) hide))) 
+
+(wire (pts 
+
+(xy 60.16 48.73) 
+
+(xy 65.16 48.73)) (stroke (width 0) (type default)) (uuid 0e5e2552-44a1-4134-a469-20ec4a6f1eda)) 
+
+(global_label "DATA_BUS" (shape input) (at 65.16 48.73 180) (fields_autoplaced) (effects (font (size 1.27 1.27)) (justify right)) (uuid ef286226-d934-49ea-ba95-d66892ca2d92) 
+
+(property "Intersheetrefs" "${INTERSHEET_REFS}" (at 58.9091 48.73 0) (effects (font (size 1.27 1.27)) (justify right) hide))))

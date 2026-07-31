@@ -1,0 +1,90 @@
+{
+  "root_components": [
+    {
+      "refdes": "U_ROOT",
+      "mpn": "ROOT-MCU",
+      "description": "Root test component",
+      "connections": [
+        {
+          "number": "1",
+          "name": "GND",
+          "net": "GND"
+        },
+        {
+          "number": "2",
+          "name": "DATA_OUT",
+          "net": "DATA_BUS",
+          "scope": "global"
+        }
+      ],
+      "notes": "Smoke-test root symbol."
+    }
+  ],
+  "sheet_definitions": [
+    {
+      "sheet_id": "led_chain",
+      "file": "led_chain.kicad_sch",
+      "components": [
+        {
+          "refdes": "U_LED_A",
+          "mpn": "LED-DRIVER",
+          "description": "Child test component",
+          "connections": [
+            {
+              "number": "1",
+              "name": "IN",
+              "net": "DATA_IN",
+              "scope": "hierarchical"
+            },
+            {
+              "number": "2",
+              "name": "OUT",
+              "net": "DATA_OUT",
+              "scope": "hierarchical"
+            },
+            {
+              "number": "3",
+              "name": "GND",
+              "net": "GND",
+              "scope": "global"
+            }
+          ],
+          "notes": "Smoke-test child symbol."
+        }
+      ]
+    }
+  ],
+  "sheet_instances": [
+    {
+      "instance_name": "LED_CHAIN_A",
+      "sheet_id": "led_chain",
+      "pin_map": [
+        {
+          "name": "DATA_IN",
+          "net": "DATA_BUS"
+        },
+        {
+          "name": "DATA_OUT",
+          "net": "CHAIN_A_OUT",
+          "scope": "local"
+        }
+      ]
+    },
+    {
+      "instance_name": "LED_CHAIN_B",
+      "sheet_id": "led_chain",
+      "pin_map": [
+        {
+          "name": "DATA_IN",
+          "net": "CHAIN_A_OUT",
+          "scope": "local"
+        },
+        {
+          "name": "DATA_OUT",
+          "net": "CHAIN_B_OUT",
+          "scope": "local"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,156 @@
+{
+  "type": "object",
+  "description": "Hierarchical schematic model with one root sheet, reusable child sheet definitions, and root-level sheet instances.",
+  "required": ["root_components", "sheet_definitions", "sheet_instances"],
+  "additionalProperties": false,
+  "properties": {
+    "root_components": {
+      "type": "array",
+      "description": "Components physically placed on the root sheet.",
+      "items": {
+        "$ref": "#/$defs/component"
+      }
+    },
+    "sheet_definitions": {
+      "type": "array",
+      "description": "Reusable child-sheet definitions. A single definition can be instantiated multiple times by sheet_instances.",
+      "items": {
+        "type": "object",
+        "required": ["sheet_id", "file", "components"],
+        "additionalProperties": false,
+        "properties": {
+          "sheet_id": {
+            "type": "string",
+            "description": "Unique identifier for this sheet definition, referenced by sheet_instances."
+          },
+          "file": {
+            "type": "string",
+            "description": "KiCad child schematic file path (usually relative, e.g. 'power_stage.kicad_sch')."
+          },
+          "components": {
+            "type": "array",
+            "description": "Components that live in this child sheet definition.",
+            "items": {
+              "$ref": "#/$defs/component"
+            }
+          }
+        }
+      }
+    },
+    "sheet_instances": {
+      "type": "array",
+      "description": "Instances placed on the root sheet. Multiple instances may point at the same sheet definition.",
+      "items": {
+        "type": "object",
+        "required": ["instance_name", "sheet_id"],
+        "additionalProperties": false,
+        "properties": {
+          "instance_name": {
+            "type": "string",
+            "description": "Unique sheet instance name on the root sheet."
+          },
+          "sheet_id": {
+            "type": "string",
+            "description": "Reference to sheet_definitions[].sheet_id."
+          },
+          "pin_map": {
+            "type": "array",
+            "description": "Optional parent-side mapping for hierarchical interface pins exposed by the child sheet.",
+            "items": {
+              "type": "object",
+              "required": ["name", "net"],
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "Hierarchical pin/label name in the child sheet interface."
+                },
+                "net": {
+                  "type": "string",
+                  "description": "Parent net connected to this sheet pin."
+                },
+                "scope": {
+                  "type": "string",
+                  "enum": ["local", "global", "hierarchical"],
+                  "description": "Label scope on the root sheet. If omitted, default is global."
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "component": {
+      "type": "object",
+      "required": ["refdes", "description", "connections", "notes"],
+      "additionalProperties": false,
+      "dependencies": {
+        "mpn": ["LCSC"],
+        "LCSC": ["mpn"]
+      },
+      "properties": {
+        "refdes": {
+          "type": "string",
+          "description": "Unique reference designator for the part, like 'U_MCU', 'R_CC1', 'C_VBUS', 'J_USB'."
+        },
+        "mpn": {
+          "type": "string",
+          "description": "Manufacturer part number."
+        },
+        "LCSC": {
+          "type": "string",
+          "description": "JLCPCB/LCSC catalog part number used to disambiguate generic manufacturer part numbers."
+        },
+        "footprint": {
+          "type": "string",
+          "description": "KiCad footprint identifier, e.g. 'TestPoint:TestPoint_Pad_D1.5mm'. When omitted, footprint may be inferred from library metadata."
+        },
+        "dnp": {
+          "type": "boolean",
+          "description": "If true, keep the footprint on the board but mark the symbol as Do Not Populate and exclude it from the BOM."
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable part description."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Engineering notes."
+        },
+        "connections": {
+          "type": "array",
+          "description": "Canonical connection list: number/name/net/scope.",
+          "items": {
+            "$ref": "#/$defs/connection"
+          }
+        }
+      }
+    },
+    "connection": {
+      "type": "object",
+      "required": ["number", "name", "net"],
+      "additionalProperties": false,
+      "properties": {
+        "number": {
+          "type": "string",
+          "description": "Pin number exactly as used by the symbol."
+        },
+        "name": {
+          "type": "string",
+          "description": "Pin name/label exactly as used by the symbol."
+        },
+        "net": {
+          "type": "string",
+          "description": "Logical net name. Use the reserved value '__NC__' to place an explicit KiCad no-connect marker on the pin."
+        },
+        "scope": {
+          "type": "string",
+          "enum": ["local", "global", "hierarchical"],
+          "description": "Connection scope. If omitted, default is global."
+        }
+      }
+    }
+  }
+}
