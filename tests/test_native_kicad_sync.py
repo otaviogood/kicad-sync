@@ -20,7 +20,7 @@ os.environ["KICADSYNC_CACHE_DIR"] = tempfile.mkdtemp(prefix="kicadsync-test-cach
 
 from kicadsync import json_schem_sync as sync
 from kicadsync.jlc_price_report import collect_design_groups
-from kicadsync.kicad_sch_model import KicadSchematic, find_child, get_property_value
+from kicadsync.kicad_sch_model import KicadSchematic, child_lists, find_child, get_property_value
 from kicadsync.kicad_sch_sexp import as_text, atom, list_head, qstr
 from kicadsync.kicad_sch_ops import candidate_label_points_for_pin, find_symbol_pin, set_symbol_property
 
@@ -40,6 +40,77 @@ class NativeBackendTests(unittest.TestCase):
     def assert_on_connection_grid(self, value: float, grid: float = 1.27) -> None:
         steps = round(value / grid)
         self.assertAlmostEqual(value, steps * grid, places=2)
+
+    def test_generate_groups_symbols_by_comment_sections(self) -> None:
+        """Root symbols are laid out one block per `// ----` comment group,
+        stacked vertically, each with a bold heading text above it."""
+        design_text = """{
+  "root_components": [
+    // ------------------------------------------------------------ regulator
+    {
+      "refdes": "U_REG", "mpn": "FAKE-LDO",
+      "footprint": "Package_TO_SOT_SMD:SOT-23-5",
+      "description": "ldo", "notes": "",
+      "connections": [
+        { "number": "1", "name": "VIN", "net": "VIN" },
+        { "number": "2", "name": "GND", "net": "GND" },
+        { "number": "5", "name": "VOUT", "net": "VOUT" }
+      ]
+    },
+    {
+      "refdes": "C_OUT", "mpn": "FAKE-CAP",
+      "footprint": "Capacitor_SMD:C_0603_1608Metric",
+      "description": "cap", "notes": "",
+      "connections": [
+        { "number": "1", "name": "1", "net": "VOUT" },
+        { "number": "2", "name": "2", "net": "GND" }
+      ]
+    },
+    // ------------------------------------------------------ output connector
+    {
+      "refdes": "J_OUT", "mpn": "FAKE-HDR",
+      "footprint": "Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical",
+      "description": "hdr", "notes": "",
+      "connections": [
+        { "number": "1", "name": "V", "net": "VOUT" },
+        { "number": "2", "name": "G", "net": "GND" }
+      ]
+    }
+  ],
+  "sheet_definitions": [],
+  "sheet_instances": []
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            json_path = tmp / "grouped.json"
+            sch_path = tmp / "grouped.kicad_sch"
+            json_path.write_text(design_text, encoding="utf-8")
+            sync.generate_schematic_from_json(json_path, sch_path)
+
+            doc = KicadSchematic.from_file(sch_path)
+
+            texts = {}
+            # (text "title" ...) -> node[1] is the string
+            for node in doc.top_level_nodes("text"):
+                from kicadsync.kicad_sch_sexp import as_text as _as
+                at = find_child(node, "at")
+                texts[_as(node[1])] = float(_as(at[2]))
+            self.assertIn("regulator", texts)
+            self.assertIn("output connector", texts)
+            self.assertLess(texts["regulator"], texts["output connector"])
+
+            sym_y = {}
+            for node in doc.top_level_nodes("symbol"):
+                refdes = get_property_value(node, "JsonRefdes")
+                at = find_child(node, "at")
+                from kicadsync.kicad_sch_sexp import as_text as _as
+                sym_y[refdes] = float(_as(at[2]))
+
+            # Heading sits above its own members; groups stack in JSON order.
+            self.assertLess(texts["regulator"], min(sym_y["U_REG"], sym_y["C_OUT"]))
+            self.assertLess(max(sym_y["U_REG"], sym_y["C_OUT"]), texts["output connector"])
+            self.assertLess(texts["output connector"], sym_y["J_OUT"])
 
     def test_roundtrip_preserves_unknown_top_level_block(self) -> None:
         text = """(kicad_sch
@@ -92,6 +163,27 @@ class NativeBackendTests(unittest.TestCase):
             generated_doc = KicadSchematic.from_file(generated_root)
             self.assertEqual(len(generated_doc.top_level_nodes("sheet")), 2)
             self.assertEqual(len(generated_doc.top_level_nodes("sheet_instances")), 1)
+
+            # KiCad format >= 20221110 keeps sub-sheet page numbers in each sheet
+            # element's (instances ...) block; the root sheet_instances holds only
+            # the "/" entry. Legacy-style extra entries make KiCad repair the file
+            # on load ("An error was found ... automatically fixed").
+            root_uuid = as_text(generated_doc.find_first("uuid")[1])
+            pages = []
+            for sheet_node in generated_doc.top_level_nodes("sheet"):
+                instances = find_child(sheet_node, "instances")
+                self.assertIsNotNone(instances)
+                project = find_child(instances, "project")
+                self.assertEqual(as_text(project[1]), "generated_root")
+                path_node = find_child(project, "path")
+                self.assertEqual(as_text(path_node[1]), f"/{root_uuid}")
+                pages.append(as_text(find_child(path_node, "page")[1]))
+            self.assertEqual(sorted(pages), ["2", "3"])
+
+            root_sheet_instances = generated_doc.top_level_nodes("sheet_instances")[0]
+            path_entries = [n for n in root_sheet_instances[1:] if isinstance(n, list) and list_head(n) == "path"]
+            self.assertEqual(len(path_entries), 1)
+            self.assertEqual(as_text(path_entries[0][1]), "/")
 
     def test_generate_supports_no_connect_pins(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2036,8 +2128,16 @@ class NativeBackendTests(unittest.TestCase):
             )
             self.assertEqual(len(instance_matches), 2)
             self.assertEqual({ref for _path, ref in instance_matches}, {"U2", "U3"})
+
+            # Page numbers live in the root file's sheet elements (instances
+            # blocks); each symbol-instance path ends in that sheet's uuid.
             for path, _ref in instance_matches:
-                self.assertRegex(child_text, re.escape(path) + r'"\s+\(\s*page\s+"[23]"')
+                sheet_uuid = path.rsplit("/", 1)[1]
+                self.assertRegex(root_text, r'\(uuid\s+"' + re.escape(sheet_uuid) + r'"\)')
+            root_pages = re.findall(r'\(\s*page\s+"(\d+)"\s*\)', root_text)
+            self.assertEqual(sorted(root_pages), ["1", "2", "3"])
+            child_pages = re.findall(r'\(\s*page\s+"(\d+)"\s*\)', child_text)
+            self.assertEqual(child_pages, ["1"])
 
     def test_generate_uses_dynamic_grid_spacing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2350,7 +2450,9 @@ class NativeBackendTests(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
-            self.assertIn("Removed stale global label 'LED_EN'", result.stdout)
+            # The moved label kept its ownership uuid, so the per-symbol
+            # ownership sweep removes it (before the name-based stale sweep).
+            self.assertIn("Removed drifted global label 'LED_EN' owned by TP_EN", result.stdout)
 
             pushed = KicadSchematic.from_file(out_sch)
             for head in ("label", "global_label", "hierarchical_label"):
@@ -2401,6 +2503,10 @@ class NativeBackendTests(unittest.TestCase):
             extra_at = find_child(extra, "at")
             extra_at[1] = atom("150.62")
             extra_at[2] = atom("150.62")
+            # KiCad assigns a fresh uuid on paste; without one the copy would
+            # (correctly) be swept as a kicadsync-owned duplicate.
+            extra_uuid = find_child(extra, "uuid")
+            extra_uuid[1] = qstr("2f0acafe-dead-4bee-8fee-c0ffee000001")
             doc.append_top_level(extra)
             doc.to_file(out_sch)
 
@@ -2513,6 +2619,58 @@ class NativeBackendTests(unittest.TestCase):
             status = kicadsync_cli.main(["push", "--json", str(json_path), "--sch", str(out_sch)])
             self.assertEqual(status, 0)
 
+    def test_jlc_parse_browse_shard_expands_lut_and_tags_category(self) -> None:
+        from kicadsync.jlc_catalog import parse_browse_shard
+
+        lut = [
+            ["Basic/Extended", {"format": "${catalog class 1}", "primary": "catalog class 1",
+                                "values": {"catalog class 1": ["Basic", "identifier"]}}],
+            ["Resistance", {"format": "${resistance}", "primary": "resistance",
+                            "values": {"resistance": ["5.1k", "identifier"]}}],
+        ]
+        header = {"lcsc": 0, "mfr": 1, "description": 2, "price": 3, "attributes": 4, "stock": 5, "subcategory": 6}
+        rows = [
+            ["C23186", "0603WAF5101T5E", "5.1k resistor", [{"qFrom": 1, "qTo": 9, "price": 0.001}], [0, 1], 4200, 7],
+            ["C99999", "MYSTERY-PART", "no attrs", [], None, 0, 7],
+        ]
+        text = "\n".join(json.dumps(x) for x in [header, *rows])
+        schema, parts = parse_browse_shard(text, lut, "Resistors", "Chip Resistor - Surface Mount")
+
+        self.assertEqual(schema, ["lcsc", "mfr", "description", "price", "attributes", "stock", "subcategory"])
+        self.assertEqual(len(parts), 2)
+        part = parts[0]
+        self.assertEqual(part["lcsc"], "C23186")
+        self.assertEqual(part["stock"], 4200)
+        self.assertEqual(part["category"], "Resistors")
+        self.assertEqual(part["subcategory"], "Chip Resistor - Surface Mount")
+        self.assertEqual(set(part["attributes"]), {"Basic/Extended", "Resistance"})
+        self.assertEqual(parts[1]["attributes"], {})
+
+    def test_jlc_attribute_default_text_handles_both_formats(self) -> None:
+        from kicadsync.jlc_catalog import _attribute_default_text
+        from kicadsync.jlc_price_report import attribute_default_text
+
+        legacy = {"format": "${default}", "primary": "default",
+                  "values": {"default": ["Extended", "string"]}}
+        v4 = {"format": "${catalog class 1}", "primary": "catalog class 1",
+              "values": {"catalog class 1": ["Basic", "identifier"]}}
+        for accessor in (_attribute_default_text, attribute_default_text):
+            self.assertEqual(accessor(legacy), "Extended")
+            self.assertEqual(accessor(v4), "Basic")
+            self.assertEqual(accessor("Basic"), "Basic")
+            self.assertIsNone(accessor(None))
+            self.assertIsNone(accessor({"values": {}}))
+
+    def test_jlc_category_slug_strips_prefix_and_chunk_suffix(self) -> None:
+        from kicadsync.jlc_catalog import CategoryRef
+
+        ref = CategoryRef(
+            category="Data Converters",
+            subcategory="ADC / DAC - Specialized",
+            shards=("browse-components-adc_specialized__dc2429e3-001.jsonl.gz",),
+        )
+        self.assertEqual(ref.slug, "adc_specialized__dc2429e3")
+
     def test_kicad_cli_validation_smoke(self) -> None:
         cli = _kicad_cli_path()
         if not cli:
@@ -2536,6 +2694,272 @@ class NativeBackendTests(unittest.TestCase):
                 check=True,
                 cwd=str(tmp),
             )
+
+
+
+
+class LabelOwnershipTests(unittest.TestCase):
+    """Tool-placed labels/stub wires/no-connects carry c0de9ace ownership
+    uuids, so a push sweeps a symbol's artifacts wherever geometry drift left
+    them — instead of only matching by position at current pin geometry."""
+
+    PAYLOAD = {
+        "root_components": [
+            {
+                "refdes": "U_SWP",
+                "mpn": "FAKE-SWAP",
+                "footprint": "Package_TO_SOT_SMD:SOT-23",
+                "description": "swap test",
+                "notes": "",
+                "connections": [
+                    {"number": "1", "name": "A", "net": "NET_A", "scope": "global"},
+                    {"number": "2", "name": "B", "net": "NET_B", "scope": "global"},
+                    {"number": "3", "name": "NC", "net": "__NC__"},
+                ],
+            }
+        ],
+        "sheet_definitions": [],
+        "sheet_instances": [],
+    }
+
+    def _generate(self, tmp: Path) -> tuple[Path, Path]:
+        json_path = tmp / "own.json"
+        sch_path = tmp / "own.kicad_sch"
+        json_path.write_text(json.dumps(self.PAYLOAD, indent=2), encoding="utf-8")
+        subprocess.run(
+            [sys.executable, "-m", "kicadsync.json_schem_sync", "generate", "--json", str(json_path), "--sch", str(sch_path)],
+            check=True,
+            cwd=str(REPO_ROOT),
+        )
+        return json_path, sch_path
+
+    @staticmethod
+    def _push(json_path: Path, sch_path: Path) -> str:
+        result = subprocess.run(
+            [sys.executable, "-m", "kicadsync.json_schem_sync", "push", "--json", str(json_path), "--sch", str(sch_path)],
+            check=True,
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout
+
+    @staticmethod
+    def _labels_by_name(doc: KicadSchematic) -> dict[str, list[tuple[float, float]]]:
+        out: dict[str, list[tuple[float, float]]] = {}
+        for head in ("label", "hierarchical_label", "global_label"):
+            for node in doc.top_level_nodes(head):
+                at = find_child(node, "at")
+                out.setdefault(as_text(node[1]), []).append((float(as_text(at[1])), float(as_text(at[2]))))
+        return out
+
+    @staticmethod
+    def _move_symbol(sch_path: Path, refdes: str, dx: float, dy: float) -> None:
+        doc = KicadSchematic.from_file(sch_path)
+        sym = next(s for s in doc.top_level_nodes("symbol") if get_property_value(s, "JsonRefdes") == refdes)
+        at = find_child(sym, "at")
+        at[1] = atom(f"{float(as_text(at[1])) + dx:.2f}")
+        at[2] = atom(f"{float(as_text(at[2])) + dy:.2f}")
+        doc.to_file(sch_path)
+
+    def test_owned_uuid_format_and_stability(self) -> None:
+        from kicadsync.kicad_sch_ops import owned_artifact_uuid, owned_uuid_fragment
+
+        u1 = owned_artifact_uuid("own.kicad_sch", "U_SWP", "label", "1")
+        self.assertRegex(u1, r"^c0de9ace-[0-9a-f]{4}-4[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$")
+        self.assertEqual(u1, owned_artifact_uuid("own.kicad_sch", "U_SWP", "label", "1"))
+        self.assertTrue(u1.startswith(owned_uuid_fragment("U_SWP")))
+        # Distinct per pin, kind, and owner.
+        self.assertNotEqual(u1, owned_artifact_uuid("own.kicad_sch", "U_SWP", "label", "2"))
+        self.assertNotEqual(u1, owned_artifact_uuid("own.kicad_sch", "U_SWP", "wire", "1"))
+        self.assertFalse(owned_artifact_uuid("x", "OTHER", "label", "1").startswith(owned_uuid_fragment("U_SWP")))
+
+    def test_generate_stamps_ownership_uuids(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _, sch_path = self._generate(Path(tmpdir))
+            doc = KicadSchematic.from_file(sch_path)
+            for head in ("global_label", "wire", "no_connect"):
+                for node in doc.top_level_nodes(head):
+                    node_uuid = find_child(node, "uuid")
+                    self.assertTrue(
+                        as_text(node_uuid[1]).startswith("c0de9ace-"),
+                        f"{head} should carry an ownership uuid, got {as_text(node_uuid[1])}",
+                    )
+
+    def test_push_sweeps_drifted_labels_after_symbol_move(self) -> None:
+        # Failure mode 1: geometry drift used to strand the old labels, so a
+        # re-push stacked a second identical label at each shifted pin.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            json_path, sch_path = self._generate(Path(tmpdir))
+            before = self._labels_by_name(KicadSchematic.from_file(sch_path))
+            old_positions = set(before["NET_A"]) | set(before["NET_B"])
+
+            self._move_symbol(sch_path, "U_SWP", 50.8, 25.4)
+            stdout = self._push(json_path, sch_path)
+            self.assertIn("Removed drifted", stdout)
+
+            doc = KicadSchematic.from_file(sch_path)
+            after = self._labels_by_name(doc)
+            self.assertEqual(len(after["NET_A"]), 1, "stacked duplicate NET_A labels")
+            self.assertEqual(len(after["NET_B"]), 1, "stacked duplicate NET_B labels")
+            for name in ("NET_A", "NET_B"):
+                self.assertNotIn(after[name][0], old_positions, f"{name} label left at old pin position")
+            self.assertEqual(len(list(doc.top_level_nodes("wire"))), 2, "stranded stub wire")
+            self.assertEqual(len(list(doc.top_level_nodes("no_connect"))), 1, "stranded no_connect")
+
+    def test_push_net_swap_between_pins_does_not_merge(self) -> None:
+        # Failure mode 2: net moved between pins while both names stay live.
+        # With drift, the stranded old label used to land on other geometry
+        # and silently merge two nets.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            json_path, sch_path = self._generate(tmp)
+            self._move_symbol(sch_path, "U_SWP", 25.4, 0.0)
+
+            payload = copy.deepcopy(self.PAYLOAD)
+            payload["root_components"][0]["connections"][0]["net"] = "NET_B"
+            payload["root_components"][0]["connections"][1]["net"] = "NET_A"
+            json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            self._push(json_path, sch_path)
+
+            doc = KicadSchematic.from_file(sch_path)
+            after = self._labels_by_name(doc)
+            self.assertEqual(len(after["NET_A"]), 1)
+            self.assertEqual(len(after["NET_B"]), 1)
+
+            # Each label sits at a stub point of the pin the JSON now assigns it.
+            sym = next(s for s in doc.top_level_nodes("symbol") if get_property_value(s, "JsonRefdes") == "U_SWP")
+            for pin_number, net in (("1", "NET_B"), ("2", "NET_A")):
+                pin = find_symbol_pin(sym, pin_number, "", doc)
+                candidates = candidate_label_points_for_pin(pin.x, pin.y, pin.angle, 2.54)
+                lx, ly = after[net][0]
+                self.assertTrue(
+                    any(abs(lx - cx) < 0.05 and abs(ly - cy) < 0.05 for cx, cy in candidates),
+                    f"{net} label not at pin {pin_number}'s stub: ({lx}, {ly}) vs {candidates}",
+                )
+
+    def test_push_adopts_legacy_random_uuid_artifacts(self) -> None:
+        # Files written before ownership stamping have random uuids. A push
+        # adopts whatever sits at the canonical stub points, so the next
+        # geometry change gets swept properly.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            json_path, sch_path = self._generate(Path(tmpdir))
+
+            doc = KicadSchematic.from_file(sch_path)
+            import uuid as uuid_mod
+
+            for head in ("label", "hierarchical_label", "global_label", "wire", "no_connect"):
+                for node in doc.top_level_nodes(head):
+                    node_uuid = find_child(node, "uuid")
+                    node_uuid[1] = qstr(str(uuid_mod.uuid4()))
+            doc.to_file(sch_path)
+
+            self._push(json_path, sch_path)
+            doc = KicadSchematic.from_file(sch_path)
+            for head in ("global_label", "wire", "no_connect"):
+                for node in doc.top_level_nodes(head):
+                    node_uuid = find_child(node, "uuid")
+                    self.assertTrue(as_text(node_uuid[1]).startswith("c0de9ace-"), f"{head} not adopted")
+
+            # And the adopted artifacts now survive drift correctly.
+            self._move_symbol(sch_path, "U_SWP", 50.8, 0.0)
+            self._push(json_path, sch_path)
+            after = self._labels_by_name(KicadSchematic.from_file(sch_path))
+            self.assertEqual(len(after["NET_A"]), 1)
+            self.assertEqual(len(after["NET_B"]), 1)
+
+    def test_push_removes_orphan_stub_wires(self) -> None:
+        # A pre-ownership push stranded a stub wire and the user hand-deleted
+        # its label. The floating remnant connects nothing to nothing, so a
+        # push sweeps it even without an ownership uuid.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            json_path, sch_path = self._generate(Path(tmpdir))
+            doc = KicadSchematic.from_file(sch_path)
+            import uuid as uuid_mod
+
+            wire = next(iter(doc.top_level_nodes("wire")))
+            find_child(wire, "uuid")[1] = qstr(str(uuid_mod.uuid4()))
+            pts = find_child(wire, "pts")
+            for xy, (nx, ny) in zip(child_lists(pts, "xy"), ((250.0, 250.0), (252.54, 250.0))):
+                xy[1] = atom(f"{nx:.2f}")
+                xy[2] = atom(f"{ny:.2f}")
+            doc.to_file(sch_path)
+
+            stdout = self._push(json_path, sch_path)
+            self.assertIn("Removed orphan stub wire", stdout)
+            doc = KicadSchematic.from_file(sch_path)
+            # The two legit stubs remain (one re-created at the pin the moved
+            # wire abandoned); the floater is gone.
+            self.assertEqual(len(list(doc.top_level_nodes("wire"))), 2)
+
+    def test_redundant_whisker_removed_bridge_kept(self) -> None:
+        # An unowned stub overlapping the owned stub through a pin (what a
+        # small symbol move leaves behind) is provably redundant and swept; a
+        # stub that BRIDGES two separate wires must never be touched.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _, sch_path = self._generate(Path(tmpdir))
+            doc = KicadSchematic.from_file(sch_path)
+            from kicadsync.kicad_sch_ops import remove_orphan_stub_wires
+
+            def wire_node(x1, y1, x2, y2, wid):
+                return [
+                    atom("wire"),
+                    [
+                        atom("pts"),
+                        [atom("xy"), atom(f"{x1:.2f}"), atom(f"{y1:.2f}")],
+                        [atom("xy"), atom(f"{x2:.2f}"), atom(f"{y2:.2f}")],
+                    ],
+                    [atom("stroke"), [atom("width"), atom("0")], [atom("type"), atom("default")]],
+                    [atom("uuid"), qstr(wid)],
+                ]
+
+            sym = next(s for s in doc.top_level_nodes("symbol") if get_property_value(s, "JsonRefdes") == "U_SWP")
+            pin1 = find_symbol_pin(sym, "1", "", doc)
+            direction = -1.0 if pin1.angle == 0 else 1.0
+            whisker = wire_node(
+                pin1.x - 1.27 * direction, pin1.y, pin1.x + 1.27 * direction, pin1.y,
+                "2f0acafe-dead-4bee-8fee-c0ffee000003",
+            )
+            doc.append_top_level(whisker)
+
+            # Two long parallel wires joined by a stub-length bridge: removing
+            # the bridge would split a net, so it must survive.
+            doc.append_top_level(wire_node(200.0, 200.0, 205.0, 200.0, "2f0acafe-dead-4bee-8fee-c0ffee000004"))
+            doc.append_top_level(wire_node(200.0, 202.54, 205.0, 202.54, "2f0acafe-dead-4bee-8fee-c0ffee000005"))
+            doc.append_top_level(wire_node(202.0, 200.0, 202.0, 202.54, "2f0acafe-dead-4bee-8fee-c0ffee000006"))
+
+            removed = remove_orphan_stub_wires(doc)
+            self.assertEqual([r[4] for r in removed], ["redundant with an overlapping wire"])
+            remaining = {as_text(find_child(w, "uuid")[1]) for w in doc.top_level_nodes("wire")}
+            self.assertNotIn("2f0acafe-dead-4bee-8fee-c0ffee000003", remaining)
+            self.assertIn("2f0acafe-dead-4bee-8fee-c0ffee000006", remaining)
+
+    def test_push_is_idempotent_with_ownership(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            json_path, sch_path = self._generate(Path(tmpdir))
+            self._push(json_path, sch_path)
+            first = sch_path.read_text(encoding="utf-8")
+            stdout = self._push(json_path, sch_path)
+            self.assertNotIn("Removed drifted", stdout)
+            self.assertEqual(first, sch_path.read_text(encoding="utf-8"))
+
+    def test_lint_stacked_labels_flags_coincident_anchors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            json_path, sch_path = self._generate(Path(tmpdir))
+            doc = KicadSchematic.from_file(sch_path)
+            existing = next(node for node in doc.top_level_nodes("global_label") if as_text(node[1]) == "NET_A")
+            merge_hazard = copy.deepcopy(existing)
+            merge_hazard[1] = qstr("NET_B")
+            merge_uuid = find_child(merge_hazard, "uuid")
+            merge_uuid[1] = qstr("2f0acafe-dead-4bee-8fee-c0ffee000002")
+            doc.append_top_level(merge_hazard)
+            doc.to_file(sch_path)
+
+            design = sync.design_from_json(json_path)
+            messages = sync.lint_stacked_labels(design, sch_path)
+            self.assertEqual(len(messages), 1)
+            self.assertIn("STACKED labels", messages[0])
+            self.assertIn("merge the nets", messages[0])
 
 
 if __name__ == "__main__":

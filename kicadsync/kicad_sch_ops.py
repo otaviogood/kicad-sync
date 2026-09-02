@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import math
 import uuid
 import copy
@@ -86,6 +87,116 @@ def label_geometry_for_pin(pin_x: float, pin_y: float, pin_angle: float, stub_le
         justify=label_justify_for_angle(label_angle),
         intersheet_x=intersheet_x_for_label(wire_end_x, label_angle),
     )
+
+
+OWNED_UUID_PREFIX = "c0de9ace"
+_PIN_ARTIFACT_HEADS = ("label", "hierarchical_label", "global_label", "wire", "no_connect")
+
+
+def owned_uuid_fragment(owner: str) -> str:
+    """UUID prefix shared by every artifact kicadsync placed for `owner` (a
+    refdes, or a sheet-instance owner key). Same c0de9ace namespace as the PCB
+    annotations, plus two groups identifying the owning symbol."""
+    digest = hashlib.sha1(f"owner:{owner}".encode("utf-8")).hexdigest()
+    return f"{OWNED_UUID_PREFIX}-{digest[0:4]}-4{digest[4:7]}-"
+
+
+def owned_artifact_uuid(namespace: str, owner: str, kind: str, pin_number: str) -> str:
+    """Stable UUID for a tool-placed pin artifact (label / stub wire /
+    no_connect): deterministic so idempotent pushes don't churn the file, and
+    owner-tagged so a later push can sweep a symbol's artifacts no matter
+    where geometry drift left them."""
+    tail = hashlib.sha1(f"{namespace}|{owner}|{kind}|{pin_number}".encode("utf-8")).hexdigest()
+    return f"{owned_uuid_fragment(owner)}8{tail[0:3]}-{tail[3:15]}"
+
+
+def node_uuid(node: List[SExp]) -> str:
+    uuid_node = find_child(node, "uuid")
+    if uuid_node is None or len(uuid_node) < 2 or isinstance(uuid_node[1], list):
+        return ""
+    return as_text(uuid_node[1])
+
+
+def set_node_uuid(node: List[SExp], value: str) -> None:
+    uuid_node = find_child(node, "uuid")
+    if uuid_node is not None and len(uuid_node) >= 2:
+        uuid_node[1] = qstr(value)
+    else:
+        node.append([atom("uuid"), qstr(value)])
+
+
+def claim_pin_wire_and_label(
+    schem: KicadSchematic,
+    pin: PinPosition,
+    net_name: str,
+    scope: str,
+    namespace: str,
+    owner: str,
+    claimed_ids: Set[int],
+    stub_len: float = 2.54,
+) -> None:
+    """Stamp ownership onto the stub wire + label serving `pin`, whether this
+    push just placed them or an older kicadsync left them with random uuids
+    (adoption). Claimed nodes survive remove_unclaimed_owned_artifacts."""
+    label_head = scope_to_label_head(scope)
+    candidates = candidate_label_points_for_pin(pin.x, pin.y, pin.angle, stub_len)
+    target = None
+    for cx, cy in candidates:
+        if _find_label(schem, label_head, net_name, cx, cy) is not None:
+            target = (cx, cy)
+            break
+    if target is None:
+        for cx, cy in candidates:
+            if _find_wire(schem, pin.x, pin.y, cx, cy) is not None:
+                target = (cx, cy)
+                break
+    if target is None:
+        return
+    label = _find_label(schem, label_head, net_name, target[0], target[1])
+    if label is not None:
+        set_node_uuid(label, owned_artifact_uuid(namespace, owner, "label", pin.number))
+        claimed_ids.add(id(label))
+    wire = _find_wire(schem, pin.x, pin.y, target[0], target[1])
+    if wire is not None:
+        set_node_uuid(wire, owned_artifact_uuid(namespace, owner, "wire", pin.number))
+        claimed_ids.add(id(wire))
+
+
+def claim_pin_no_connect(
+    schem: KicadSchematic,
+    pin: PinPosition,
+    namespace: str,
+    owner: str,
+    claimed_ids: Set[int],
+) -> None:
+    for marker in schem.top_level_nodes("no_connect"):
+        at = _find_at(marker)
+        if at is not None and _close(at[0], pin.x) and _close(at[1], pin.y):
+            set_node_uuid(marker, owned_artifact_uuid(namespace, owner, "no_connect", pin.number))
+            claimed_ids.add(id(marker))
+            return
+
+
+def remove_unclaimed_owned_artifacts(
+    schem: KicadSchematic,
+    owner: str,
+    claimed_ids: Set[int],
+) -> List[Tuple[str, str]]:
+    """Delete every artifact owned by `owner` that the current push didn't
+    claim. Ownership lives in the uuid, not the position, so labels/wires
+    stranded at old pin positions by a symbol re-render are swept wherever
+    they drifted. Returns the removed (head, label_text) pairs."""
+    fragment = owned_uuid_fragment(owner)
+    removed: List[Tuple[str, str]] = []
+    for head in _PIN_ARTIFACT_HEADS:
+        for node in list(schem.top_level_nodes(head)):
+            if id(node) in claimed_ids:
+                continue
+            if not node_uuid(node).startswith(fragment):
+                continue
+            schem.remove_top_level(node)
+            removed.append((head, _node_label_value(node)))
+    return removed
 
 
 def find_symbol_by_reference(schem: KicadSchematic, refdes: str) -> Optional[List[SExp]]:
@@ -268,6 +379,103 @@ def remove_stale_labels(schem: KicadSchematic, live_net_names: Set[str]) -> List
     return removed
 
 
+def remove_orphan_stub_wires(
+    schem: KicadSchematic, stub_len: float = 2.54
+) -> List[Tuple[float, float, float, float, str]]:
+    """Remove stub wires whose removal provably cannot change the netlist.
+
+    Two cases, both restricted to unowned wires of exactly one stub length
+    (the signature of a stranded pre-ownership pin stub):
+
+    - "connected to nothing": touches no pin, label, no-connect, junction, or
+      other wire — electrically inert.
+    - "redundant with an overlapping wire": every connection point it touches
+      (pins/labels/junctions on it, wire-touch points) lies on one single
+      other wire, so everything it joins stays joined through that wire. This
+      is what a stranded stub looks like after its symbol moved a small step
+      and the replacement stub overlaps it.
+
+    Returns the removed segments as (x1, y1, x2, y2, reason).
+    """
+    pin_points: Set[Tuple[float, float]] = set()
+    for sym in schem.top_level_nodes("symbol"):
+        for pin in _pin_positions_for_symbol(sym, schem).values():
+            pin_points.add((round(pin.x, 2), round(pin.y, 2)))
+
+    anchor_points: Set[Tuple[float, float]] = set(pin_points)
+    for head in ("label", "hierarchical_label", "global_label", "no_connect", "junction"):
+        for node in schem.top_level_nodes(head):
+            at = _find_at(node)
+            if at is None:
+                continue
+            anchor_points.add((round(at[0], 2), round(at[1], 2)))
+
+    def wire_segment(wire: List[SExp]) -> Optional[Tuple[Tuple[float, float], Tuple[float, float]]]:
+        pts = find_child(wire, "pts")
+        if pts is None:
+            return None
+        xy = child_lists(pts, "xy")
+        if len(xy) != 2 or len(xy[0]) < 3 or len(xy[1]) < 3:
+            return None
+        ax, ay = _parse_float(xy[0][1]), _parse_float(xy[0][2])
+        bx, by = _parse_float(xy[1][1]), _parse_float(xy[1][2])
+        if None in (ax, ay, bx, by):
+            return None
+        return ((ax, ay), (bx, by))
+
+    def point_on_segment(px: float, py: float, a: Tuple[float, float], b: Tuple[float, float]) -> bool:
+        if not (min(a[0], b[0]) - 0.02 <= px <= max(a[0], b[0]) + 0.02):
+            return False
+        if not (min(a[1], b[1]) - 0.02 <= py <= max(a[1], b[1]) + 0.02):
+            return False
+        cross = (b[0] - a[0]) * (py - a[1]) - (b[1] - a[1]) * (px - a[0])
+        length = math.dist(a, b)
+        if length < 0.02:
+            return math.dist((px, py), a) <= 0.02
+        return abs(cross) / length <= 0.02
+
+    wires = [(w, wire_segment(w)) for w in schem.top_level_nodes("wire")]
+    dropped: Set[int] = set()
+    removed: List[Tuple[float, float, float, float, str]] = []
+    for wire, seg in wires:
+        if seg is None or node_uuid(wire).startswith(OWNED_UUID_PREFIX + "-"):
+            continue
+        a, b = seg
+        if abs(math.dist(a, b) - stub_len) > 0.01:
+            continue
+        if not (_close(a[0], b[0]) or _close(a[1], b[1])):
+            continue
+
+        # Every connection point this wire provides: pins/labels/junctions on
+        # it, plus each point where it and another wire touch.
+        contacts: List[Tuple[float, float]] = []
+        for px, py in anchor_points:
+            if point_on_segment(px, py, a, b):
+                contacts.append((px, py))
+        others = [(ow, oseg) for ow, oseg in wires if ow is not wire and id(ow) not in dropped and oseg is not None]
+        for _, oseg in others:
+            for p in oseg:
+                if point_on_segment(p[0], p[1], a, b):
+                    contacts.append(p)
+            for p in (a, b):
+                if point_on_segment(p[0], p[1], oseg[0], oseg[1]):
+                    contacts.append(p)
+
+        if not contacts:
+            reason = "connected to nothing"
+        else:
+            covered_by_one = any(
+                all(point_on_segment(cx, cy, oseg[0], oseg[1]) for cx, cy in contacts) for _, oseg in others
+            )
+            if not covered_by_one:
+                continue
+            reason = "redundant with an overlapping wire"
+        schem.remove_top_level(wire)
+        dropped.add(id(wire))
+        removed.append((a[0], a[1], b[0], b[1], reason))
+    return removed
+
+
 def sync_schematic_normalized(schem: KicadSchematic) -> None:
     # Keep a stable ordering where top-level sheet_instances stays near the end if present.
     # Unknown nodes remain in place unless we append new wire/label entries.
@@ -387,7 +595,7 @@ def _node_label_value(label_node: List[SExp]) -> str:
     return as_text(label_node[1])
 
 
-def _has_wire(schem: KicadSchematic, x1: float, y1: float, x2: float, y2: float) -> bool:
+def _find_wire(schem: KicadSchematic, x1: float, y1: float, x2: float, y2: float) -> Optional[List[SExp]]:
     for wire in schem.top_level_nodes("wire"):
         pts = find_child(wire, "pts")
         if pts is None:
@@ -402,8 +610,12 @@ def _has_wire(schem: KicadSchematic, x1: float, y1: float, x2: float, y2: float)
         if (_close(a[0], x1) and _close(a[1], y1) and _close(b[0], x2) and _close(b[1], y2)) or (
             _close(a[0], x2) and _close(a[1], y2) and _close(b[0], x1) and _close(b[1], y1)
         ):
-            return True
-    return False
+            return wire
+    return None
+
+
+def _has_wire(schem: KicadSchematic, x1: float, y1: float, x2: float, y2: float) -> bool:
+    return _find_wire(schem, x1, y1, x2, y2) is not None
 
 
 def _has_label(schem: KicadSchematic, label_head: str, net_name: str, x: float, y: float) -> bool:

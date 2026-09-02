@@ -51,6 +51,11 @@ from .kicad_sch_ops import (
     find_symbol_by_property,
     add_wire_and_label_for_pin,
     candidate_label_points_for_pin,
+    claim_pin_no_connect,
+    claim_pin_wire_and_label,
+    owned_artifact_uuid,
+    remove_orphan_stub_wires,
+    remove_unclaimed_owned_artifacts,
     find_symbol_by_reference,
     find_symbol_pin,
     get_symbol_property,
@@ -181,6 +186,35 @@ def strip_json_comments(text: str) -> str:
     text = _COMMENT_BLOCK_RE.sub("", text)
     text = _COMMENT_LINE_RE.sub("", text)
     return text
+
+
+_GROUP_SEPARATOR_RE = re.compile(r"^\s*//\s*(-{4,}.*)$")
+_GROUP_REFDES_RE = re.compile(r'"refdes"\s*:\s*"([^"]+)"')
+_GROUP_SECTION_END_RE = re.compile(r'^\s*"(sheet_definitions|sheet_instances)"\s*:')
+
+
+def extract_comment_groups(raw_text: str) -> Dict[str, str]:
+    """Map root-component refdes -> group title from `// ---- title` lines.
+
+    The design JSON's comment separators are its functional grouping; both
+    `kicadsync place` (PCB clusters) and `generate` (schematic layout) use
+    this same partition.
+    """
+    groups: Dict[str, str] = {}
+    current = ""
+    for line in raw_text.splitlines():
+        if _GROUP_SECTION_END_RE.match(line):
+            break
+        sep = _GROUP_SEPARATOR_RE.match(line)
+        if sep:
+            title = sep.group(1).strip(" -\t")
+            if title:
+                current = title
+            continue
+        ref = _GROUP_REFDES_RE.search(line)
+        if ref:
+            groups[ref.group(1)] = current or "main"
+    return groups
 
 
 def _normalize_scope(raw_scope: Optional[str]) -> str:
@@ -578,6 +612,43 @@ def lint_single_pin_nets(design: DesignData) -> List[Tuple[str, str]]:
     return findings
 
 
+def lint_stacked_labels(design: DesignData, sch_path: Path) -> List[str]:
+    """Flag label anchors that coincide exactly. Two same-name labels stacked
+    is leftover clutter; two different names on one point silently merge the
+    nets. Both are the footprint of labels stranded by pre-ownership pushes."""
+    messages: List[str] = []
+    paths = [sch_path] + [sch_path.parent / sd.file for sd in design.sheet_definitions]
+    for path in paths:
+        if not path.exists():
+            continue
+        schem = load_schematic(path)
+        by_point: Dict[Tuple[float, float], List[str]] = {}
+        for head in ("label", "hierarchical_label", "global_label"):
+            for label in schem.top_level_nodes(head):
+                at = find_child(label, "at")
+                if at is None or len(at) < 3:
+                    continue
+                try:
+                    x = round(float(as_text(at[1])), 2)
+                    y = round(float(as_text(at[2])), 2)
+                except ValueError:
+                    continue
+                name = as_text(label[1]) if len(label) >= 2 and not isinstance(label[1], list) else ""
+                by_point.setdefault((x, y), []).append(name)
+        for (x, y), names in sorted(by_point.items()):
+            if len(names) < 2:
+                continue
+            listing = ", ".join(f"'{n}'" for n in names)
+            if len(set(names)) > 1:
+                messages.append(
+                    f"STACKED labels at ({x:g}, {y:g}) in {path.name}: {listing}"
+                    " — different names on one point merge the nets"
+                )
+            else:
+                messages.append(f"STACKED labels at ({x:g}, {y:g}) in {path.name}: {listing} (duplicates)")
+    return messages
+
+
 def design_to_json(design: DesignData, path: Path) -> None:
     out = {
         "root_components": [_component_to_json(c) for c in design.root_components],
@@ -693,6 +764,7 @@ def _apply_components_to_schematic(
         if not json_refdes or json_refdes in desired_refdes:
             continue
         _remove_symbol_and_artifacts(schem, sym)
+        remove_unclaimed_owned_artifacts(schem, json_refdes, set())
         removed_refs.append(json_refdes)
 
     for comp in components:
@@ -749,6 +821,7 @@ def _apply_components_to_schematic(
         set_symbol_property(sym, "Description", description_text)
         set_symbol_property(sym, "Notes", comp.notes)
 
+        claimed_ids: Set[int] = set()
         for conn in comp.connections:
             try:
                 pin = find_symbol_pin(sym, conn.number, conn.name, schem)
@@ -757,6 +830,7 @@ def _apply_components_to_schematic(
                 continue
             if conn.net == NC_NET_NAME:
                 added = add_no_connect_for_pin(schem=schem, pin=pin)
+                claim_pin_no_connect(schem, pin, sch_path.name, comp.refdes, claimed_ids)
             else:
                 added = add_wire_and_label_for_pin(
                     schem=schem,
@@ -765,13 +839,24 @@ def _apply_components_to_schematic(
                     scope=_normalize_scope(conn.scope),
                     stub_len=2.54,
                 )
+                claim_pin_wire_and_label(
+                    schem, pin, conn.net, _normalize_scope(conn.scope), sch_path.name, comp.refdes, claimed_ids
+                )
             if added:
                 pins_connected += 1
+
+        for head, name in remove_unclaimed_owned_artifacts(schem, comp.refdes, claimed_ids):
+            kind = head.replace("_", " ")
+            detail = f" '{name}'" if name else ""
+            print(f"[push] Removed drifted {kind}{detail} owned by {comp.refdes} in {sch_path.name}")
 
     if live_net_names is not None:
         for head, name in remove_stale_labels(schem, live_net_names):
             kind = head.replace("_", " ")
             print(f"[push] Removed stale {kind} '{name}' in {sch_path.name} (net not in JSON)")
+
+    for x1, y1, x2, y2, reason in remove_orphan_stub_wires(schem):
+        print(f"[push] Removed orphan stub wire ({x1:g}, {y1:g})-({x2:g}, {y2:g}) in {sch_path.name} ({reason})")
 
     print(f"[push] {sch_path.name}: matched={found_count} pins_connected={pins_connected} missing={len(missing_refs)}")
     if added_refs:
@@ -1609,8 +1694,10 @@ def _generate_symbol_instance(
 	)'''
 
 
-def _generate_label(label_type: str, net_name: str, x: float, y: float, pin_angle: float) -> str:
-    label_uuid = _make_uuid()
+def _generate_label(
+    label_type: str, net_name: str, x: float, y: float, pin_angle: float, label_uuid: Optional[str] = None
+) -> str:
+    label_uuid = label_uuid or _make_uuid()
     angle = label_angle_for_pin_angle(pin_angle)
     justify = label_justify_for_angle(angle)
     intersheet_x = intersheet_x_for_label(x, angle)
@@ -1649,9 +1736,16 @@ def _generate_wire_and_label(
     net_name: str,
     scope: str,
     pin: PinPosition,
+    namespace: str = "",
+    owner: str = "",
     stub_len: float = 2.54,
 ) -> str:
-    wire_uuid = _make_uuid()
+    if owner:
+        wire_uuid = owned_artifact_uuid(namespace, owner, "wire", pin.number)
+        label_uuid = owned_artifact_uuid(namespace, owner, "label", pin.number)
+    else:
+        wire_uuid = _make_uuid()
+        label_uuid = None
     label_x, label_y = candidate_label_points_for_pin(pin.x, pin.y, pin.angle, stub_len)[0]
     return f'''
 	(wire
@@ -1659,11 +1753,11 @@ def _generate_wire_and_label(
 		(stroke (width 0) (type default))
 		(uuid "{wire_uuid}")
 	)
-{_generate_label(scope, net_name, label_x, label_y, pin_angle=pin.angle)}'''
+{_generate_label(scope, net_name, label_x, label_y, pin_angle=pin.angle, label_uuid=label_uuid)}'''
 
 
-def _generate_no_connect(x: float, y: float) -> str:
-    nc_uuid = _make_uuid()
+def _generate_no_connect(x: float, y: float, nc_uuid: Optional[str] = None) -> str:
+    nc_uuid = nc_uuid or _make_uuid()
     return f'''
 	(no_connect
 		(at {x:.2f} {y:.2f})
@@ -1803,20 +1897,91 @@ def _sheet_dimensions(pin_names: Sequence[str], instance_name: str, sheet_file: 
     return (width, height)
 
 
+def _generate_group_heading(title: str, x: float, y: float) -> str:
+    return f"""	(text "{_escape_string(title)}"
+		(exclude_from_sim no)
+		(at {x:g} {y:g} 0)
+		(effects
+			(font
+				(size 2.54 2.54)
+				(thickness 0.508)
+				(bold yes)
+			)
+			(justify left bottom)
+		)
+		(uuid "{_make_uuid()}")
+	)"""
+
+
+def _layout_component_groups(
+    components: Sequence[RenderComponent],
+    groups: Optional[Dict[str, str]],
+    start_x: float,
+    start_y: float,
+    cols: int,
+) -> Tuple[List[RenderComponent], List[Tuple[float, float]], List[Tuple[str, float, float]]]:
+    """One grid block per comment group (first-appearance order), stacked
+    vertically with a bold heading above each. Without groups this reduces to
+    the single grid the generator always produced."""
+    if not components:
+        return ([], [], [])
+    if not groups:
+        ordered = sorted(components, key=lambda c: c.component.refdes)
+        centers = _compute_component_centers(ordered, start_x=start_x, start_y=start_y, cols=cols)
+        return (list(ordered), centers, [])
+
+    buckets: Dict[str, List[RenderComponent]] = {}
+    title_order: List[str] = []
+    for item in components:  # JSON order keeps groups contiguous
+        title = groups.get(item.component.refdes) or "other"
+        if title not in buckets:
+            buckets[title] = []
+            title_order.append(title)
+        buckets[title].append(item)
+
+    heading_height = 2.54
+    heading_gap = 4.0    # heading baseline to first row's text zone
+    group_gap = 18.0     # bottom of one group to the next heading
+
+    ordered_all: List[RenderComponent] = []
+    centers_all: List[Tuple[float, float]] = []
+    headings: List[Tuple[str, float, float]] = []
+    top = _snap_to_grid(start_y)
+    for title in title_order:
+        members = sorted(buckets[title], key=lambda c: c.component.refdes)
+        metrics = [_component_layout_metrics(c) for c in members]
+        heading_y = _snap_up(top + heading_height)
+        headings.append((title, _snap_to_grid(start_x - 15.0), heading_y))
+        first_row_top = max(m[2] for m in metrics[:cols])
+        centers = _compute_component_centers(
+            members, start_x=start_x, start_y=_snap_up(heading_y + heading_gap + first_row_top), cols=cols
+        )
+        bottom = max(cy + m[3] for (_cx, cy), m in zip(centers, metrics))
+        ordered_all.extend(members)
+        centers_all.extend(centers)
+        top = _snap_up(bottom + group_gap)
+    return (ordered_all, centers_all, headings)
+
+
 def _render_components_on_sheet(
     components: Sequence[RenderComponent],
     project_name: str,
+    namespace: str = "",
     start_x: float = 50.0,
     start_y: float = 50.0,
-) -> Tuple[str, str, str, Set[str]]:
+    groups: Optional[Dict[str, str]] = None,
+) -> Tuple[str, str, str, Set[str], float]:
     lib_symbols: List[str] = []
     symbol_instances: List[str] = []
     wires_and_labels: List[str] = []
     hierarchical_nets: Set[str] = set()
 
     cols = 4
-    ordered_components = sorted(components, key=lambda c: c.component.refdes)
-    centers = _compute_component_centers(ordered_components, start_x=start_x, start_y=start_y, cols=cols)
+    ordered_components, centers, headings = _layout_component_groups(
+        components, groups, start_x=start_x, start_y=start_y, cols=cols
+    )
+    for title, hx, hy in headings:
+        wires_and_labels.append(_generate_group_heading(title, hx, hy))
     emitted_lib_ids: Set[str] = set()
 
     for idx, item in enumerate(ordered_components):
@@ -1845,9 +2010,13 @@ def _render_components_on_sheet(
                 )
                 continue
             if conn.net == NC_NET_NAME:
-                wires_and_labels.append(_generate_no_connect(pin.x, pin.y))
+                wires_and_labels.append(
+                    _generate_no_connect(
+                        pin.x, pin.y, owned_artifact_uuid(namespace, comp.refdes, "no_connect", pin.number)
+                    )
+                )
                 continue
-            wires_and_labels.append(_generate_wire_and_label(conn.net, conn.scope, pin))
+            wires_and_labels.append(_generate_wire_and_label(conn.net, conn.scope, pin, namespace, comp.refdes))
             if conn.scope == "hierarchical":
                 hierarchical_nets.add(conn.net)
 
@@ -1856,6 +2025,7 @@ def _render_components_on_sheet(
         "\n".join(symbol_instances),
         "\n".join(wires_and_labels),
         hierarchical_nets,
+        _component_layout_right_edge(ordered_components, centers),
     )
 
 
@@ -1901,18 +2071,20 @@ def _generate_child_schematic(
     project_name: str,
     library_symbols: Sequence[ResolvedSymbol],
     annotations_by_refdes: Dict[str, List[SymbolInstanceEntry]],
-    sheet_occurrences: Sequence[SheetOccurrence],
 ) -> Set[str]:
     child_uuid = _make_uuid()
     rendered_components = _attach_instance_entries(
         _resolve_render_components(sheet_def.components, library_symbols),
         annotations_by_refdes,
     )
-    lib_symbols_str, symbols_str, wires_str, hierarchical_nets = _render_components_on_sheet(
+    lib_symbols_str, symbols_str, wires_str, hierarchical_nets, _right_edge = _render_components_on_sheet(
         rendered_components,
         project_name=project_name,
+        namespace=sheet_def.file,
     )
-    sheet_paths = [(occ.path, occ.page) for occ in sheet_occurrences] or [("/", "1")]
+    # Child files only carry the standalone-open stub; real page numbers live in
+    # each root-sheet element's (instances ...) block (KiCad format >= 20221110).
+    sheet_paths = [("/", "1")]
     schematic = f'''(kicad_sch
 	(version 20231120)
 	(generator "json_schem_sync")
@@ -1965,7 +2137,6 @@ def generate_schematic_from_json(json_path: Path, sch_path: Path) -> None:
             project_name=project_name,
             library_symbols=library_symbols,
             annotations_by_refdes=child_annotations.get(sheet_def.sheet_id, {}),
-            sheet_occurrences=sheet_occurrences.get(sheet_def.sheet_id, []),
         )
         file_by_sheet_id[sheet_def.sheet_id] = sheet_def.file
 
@@ -1974,23 +2145,17 @@ def generate_schematic_from_json(json_path: Path, sch_path: Path) -> None:
         _resolve_render_components(design.root_components, library_symbols),
         root_annotations,
     )
-    ordered_root_components = sorted(rendered_root_components, key=lambda c: c.component.refdes)
-    root_centers = _compute_component_centers(
-        ordered_root_components,
-        start_x=50.0,
-        start_y=50.0,
-        cols=4,
-    )
-    lib_symbols_str, symbols_str, wires_str, _ = _render_components_on_sheet(
+    lib_symbols_str, symbols_str, wires_str, _, root_right_edge = _render_components_on_sheet(
         rendered_root_components,
         project_name=project_name,
+        namespace=sch_path.name,
+        groups=extract_comment_groups(json_path.read_text(encoding="utf-8")),
     )
 
     # 3) Place sheet instances in root and connect sheet pins.
     sheet_blocks: List[str] = []
     instance_labels: List[str] = []
     sheet_path_entries: List[Tuple[str, str]] = [("/", "1")]
-    root_right_edge = _component_layout_right_edge(ordered_root_components, root_centers)
     sheet_x = _snap_up(max(220.0, root_right_edge + 25.0))
     sheet_y = _snap_to_grid(40.0)
     sheet_gap = _snap_up(18.0)
@@ -2032,6 +2197,8 @@ def generate_schematic_from_json(json_path: Path, sch_path: Path) -> None:
                         y=pin_y,
                         angle=pin_angle_for_facing("left"),
                     ),
+                    namespace=sch_path.name,
+                    owner=f"sheet:{instance.instance_name}",
                 )
             )
 
@@ -2053,9 +2220,15 @@ def generate_schematic_from_json(json_path: Path, sch_path: Path) -> None:
 			(effects (font (size 1.27 1.27)))
 		)
 {"".join(pin_lines)}
+		(instances
+			(project "{_escape_string(project_name)}"
+				(path "/{root_uuid}"
+					(page "{instance_occurrence.page}")
+				)
+			)
+		)
 	)'''
         )
-        sheet_path_entries.append((instance_occurrence.path, instance_occurrence.page))
         sheet_y = y0 + sheet_h + sheet_gap
 
     schematic = f'''(kicad_sch

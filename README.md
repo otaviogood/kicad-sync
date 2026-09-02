@@ -24,10 +24,11 @@ open kicad/blinky.kicad_pro    # route the board in KiCad
 | Command | What it does |
 | --- | --- |
 | `kicadsync new <name>` | Scaffold a project: design JSON, KiCad project, README, CLAUDE.md, part-onboarding agents |
-| `kicadsync push` | Sync design JSON into the schematic (generates it on first run; updates properties + net labels, sweeps stale labels), then health-check: single-pin-net lint plus exported-netlist audit |
+| `kicadsync push` | Sync design JSON into the schematic (generates it on first run; updates properties + net labels, sweeps stale labels), then health-check: single-pin-net lint, stacked-label lint, plus exported-netlist audit. Labels/stubs the tool places carry ownership UUIDs, so when a symbol's pins move (re-render, symbol moved in KiCad) the old labels are swept wherever they ended up instead of stacking or silently merging nets |
 | `kicadsync check` | Re-run the health check alone — useful after deleting/moving labels by hand in KiCad |
 | `kicadsync pull` | Read net-label edits made in KiCad back into the JSON |
-| `kicadsync generate --force` | Rebuild the schematic from scratch, discarding manual edits |
+| `kicadsync generate --force` | Rebuild the schematic from scratch, discarding manual edits. Symbols are laid out one block per `// ----` comment group with a bold heading above each — the same grouping `place` uses on the PCB |
+| `kicadsync place` | Cluster + place PCB footprints: groups come from the design JSON's `// ----` comment separators, and small parts snap next to the IC/connector pin sharing their most-specific net (decoupling caps land at their pins automatically). Each group gets a labelled box on the `User.Comments` layer. Run KiCad's *Update PCB from Schematic* (F8) and save first. Locked footprints are never moved — lock what you've finalized and re-run. `--gap` sets group spacing, `--no-outlines` skips the boxes |
 | `kicadsync list-libs` | Scan installed KiCad symbol libraries into a local metadata cache (symbols get reused during generation) |
 | `kicadsync jlc-report <design.json>` | BOM report with JLCPCB/LCSC unit price and live stock, sorted by cost and by scarcity |
 | `kicadsync jlc fetch-all` / `search-mpn` | Download/search the [jlcparts](https://github.com/yaqwsx/jlcparts) static catalog locally |
@@ -85,9 +86,19 @@ projects stay machine-independent.
    number to a net name. Comments (`//`) are allowed.
 2. **Sync** with `kicadsync push`. Symbols come from your installed KiCad
    libraries when the MPN matches (via the `list-libs` cache); unmatched parts
-   get placeholder symbols marked `NOLIB` for review.
-3. **Route** in KiCad. The generated schematic drives the netlist and PCB;
-   layout is normal KiCad work.
+   get placeholder symbols marked `NOLIB` for review. On first generation the
+   schematic is laid out by your JSON's `// ----` comment groups — one block
+   per group with a bold heading, in the same order as the file.
+3. **Route** in KiCad. The generated schematic drives the netlist and PCB.
+   After *Update PCB from Schematic* (F8), `kicadsync place` turns the heap of
+   footprints into a starting arrangement — one cluster per JSON comment
+   group, satellites hugging the pins they connect to, clusters that share
+   nets adjacent. Every group is outlined and labelled on `User.Comments`
+   so you can see the structure at a glance; those boxes are documentation
+   only (not plotted in fab output) and each run replaces the previous
+   run's, leaving your own drawings on that layer untouched. Refine by
+   hand, lock the footprints you're happy with (locked parts are never
+   moved), re-run `place` any time.
 4. **Iterate.** Re-run `push` after JSON edits — it updates properties and
    labels without destroying manual schematic cleanup, and `pull` brings
    KiCad-side net renames back into the JSON.

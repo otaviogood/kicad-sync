@@ -8,6 +8,9 @@ Subcommands:
                    already run it; use this after manual edits in KiCad
   pull             Schematic -> JSON (net labels)
   generate         Rebuild schematic from scratch (--force if it exists)
+  place            Cluster + place PCB footprints (design-JSON comment groups
+                   + net-connectivity inference); run KiCad's Update PCB from
+                   Schematic (F8) and save first. Locked footprints stay put.
   list-libs        Dump installed KiCad symbols to the shared cache
   jlc-report       Price/stock BOM report for a design JSON
   jlc ...          Fetch/search the JLCPCB parts catalog
@@ -29,7 +32,7 @@ import tempfile
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from . import jlc_catalog, jlc_price_report, json_schem_sync, paths
+from . import jlc_catalog, jlc_price_report, json_schem_sync, paths, pcb_place
 from .kicad_sch_sexp import as_text, list_head, parse_one
 
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
@@ -208,6 +211,10 @@ def run_health_check(design_path: Path, sch_path: Path) -> int:
         linted_nets.add(net)
         problems += 1
 
+    for message in json_schem_sync.lint_stacked_labels(design, sch_path):
+        print(f"[check] {message}")
+        problems += 1
+
     cli = _kicad_cli()
     if cli is None:
         print("[check] kicad-cli not found — skipping netlist audit (install KiCad to enable it)")
@@ -362,6 +369,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             status = json_schem_sync.main(["push", *rest]) or 0
         return status if status else _post_sync_health(rest)
+    if cmd == "place":
+        rest = _with_project_defaults(rest)
+        if _flag_value(rest, "--pcb") is None:
+            sch_arg = _flag_value(rest, "--sch")
+            if sch_arg:
+                rest = [*rest, "--pcb", str(Path(sch_arg).with_suffix(".kicad_pcb"))]
+        return pcb_place.main(rest) or 0
     if cmd == "check":
         return cmd_check(rest)
     if cmd == "list-libs":

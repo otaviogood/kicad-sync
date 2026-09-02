@@ -16,3 +16,6 @@ venv/
 .mypy_cache/
 .ruff_cache/
 .coverage
+
+# Superseded footprints kept locally for reference — not part of the curated library
+parts-library/footprints_retired/

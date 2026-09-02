@@ -287,14 +287,30 @@ Two gotchas to know:
 
 ## Step 7 — Layout
 
-Normal KiCad from here:
+1. Open the board editor, **Tools → Update PCB from Schematic** (F8), save.
+2. `kicadsync place` — turns the imported heap into a starting arrangement:
+   one cluster per `// ----` comment group in your JSON, passives sitting at
+   the IC/connector pins their nets actually connect to, and clusters that
+   share nets placed next to each other. Each group is outlined and labelled
+   on the `User.Comments` layer so the structure is visible at a glance.
+3. Refine by hand. **Lock** (hover + `L`) anything you've finalized — `place`
+   never moves a locked footprint, and re-flows its group around it. Unlocked
+   anchors keep any rotation you gave them.
+4. Re-run `place` freely (after JSON changes, or to try a different `--gap`).
+   It's deterministic, and it replaces its own group boxes rather than piling
+   up new ones. `--dry-run` reports the plan without writing; `--no-outlines`
+   skips (and clears) the boxes.
+5. Draw the outline on Edge.Cuts — once it exists, `place` packs groups inside
+   it instead of an auto-sized area. Then route and pour zones.
+6. Run DRC.
 
-1. Open the board editor, **Tools → Update PCB from Schematic** (F8).
-2. Draw the outline on Edge.Cuts, place parts, route, pour zones.
-3. Run DRC.
+Placement is a starting point, not a finished layout: it optimises "related
+parts are near each other", not thermals, EMI, or mechanical constraints.
 
-The `.kicad_pcb` is yours alone — the sync tools never touch it. Re-running
-`push` after layout is safe: footprint/value updates flow in via F8 again.
+Apart from `place` (which only rewrites footprint positions and its own
+group boxes), the `.kicad_pcb` is yours — routing, zones, and outlines are
+never touched. Re-running `push` after layout is safe: footprint/value
+updates flow in via F8 again.
 
 If you added test points or DNP'd a part in JSON (`"dnp": true`), F8 carries
 that through — DNP parts keep pads on the board but drop out of the BOM.
@@ -324,6 +340,9 @@ JLCPCB. Commit the project repo; it's self-contained and shareable.
 | Renamed nets in KiCad | `kicadsync pull` (rewrites JSON; comments lost) |
 | Deleted/moved labels by hand in KiCad | `kicadsync check` (re-audit without pushing) |
 | Want a fresh auto-layout | `kicadsync generate --force` (discards manual schematic edits) |
+| Footprints are a heap after F8 | `kicadsync place` (cluster + place by group and connectivity) |
+| Groups too tight / too loose | `kicadsync place --gap 6` (default 4mm) |
+| Keep a part where I put it | Lock it in KiCad (hover + `L`), then re-run `place` |
 | What's this part cost? | `kicadsync jlc search-mpn <MPN>` |
 | Whole-BOM cost/stock | `kicadsync jlc-report <design.json>` |
 | Placeholders for known parts? | `kicadsync list-libs` (refresh symbol cache) |

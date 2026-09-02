@@ -69,11 +69,17 @@ def attribute_default_text(value: Any) -> Optional[str]:
     values = value.get("values")
     if not isinstance(values, dict):
         return None
-    default_value = values.get("default")
-    if not isinstance(default_value, list) or not default_value:
-        return None
-    scalar = default_value[0]
-    return scalar if isinstance(scalar, str) else None
+    # Legacy payloads key the scalar under "default"; the 2026 jlcparts
+    # format keys it under the attribute's own "primary" name.
+    keys = ["default"]
+    primary = value.get("primary")
+    if isinstance(primary, str):
+        keys.append(primary)
+    for key in keys:
+        scalar_list = values.get(key)
+        if isinstance(scalar_list, list) and scalar_list and isinstance(scalar_list[0], str):
+            return scalar_list[0]
+    return None
 
 
 @dataclass

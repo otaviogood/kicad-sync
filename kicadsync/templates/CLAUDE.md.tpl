@@ -10,12 +10,19 @@ done by editing the JSON.
 
 1. Edit `{{NAME}}.json` (add/change components, pins, nets).
 2. `kicadsync push` — updates `kicad/{{NAME}}.kicad_sch` (first run generates
-   it), removes labels for nets that no longer exist in the JSON, then runs a
+   it, grouping symbols into one labelled block per `// ----` comment group),
+   removes labels for nets that no longer exist in the JSON, then runs a
    health check: a single-pin-net lint on the JSON plus a real netlist export
    compared against the design. Exit code 0 means schematic and JSON agree;
    nonzero means `[check]` findings were printed — fix them before proceeding.
 3. `kicadsync jlc-report {{NAME}}.json` — check JLC price/stock for every part.
-4. The user opens `kicad/{{NAME}}.kicad_pro`, updates the PCB from the schematic, routes.
+4. The user opens `kicad/{{NAME}}.kicad_pro`, updates the PCB from the
+   schematic (F8), saves. Then `kicadsync place` arranges the footprints:
+   one cluster per `// ----` comment group in the JSON, passives placed at
+   the IC/connector pins their nets connect to, connected clusters adjacent,
+   and each group outlined + labelled on the `User.Comments` layer.
+   The user refines in KiCad and locks footprints to protect them from the
+   next `place` run; routing stays manual.
 5. If the user edited net labels in KiCad: `kicadsync pull` syncs them back to
    JSON (note: rewrites the file — JSON comments are lost). After deleting or
    moving labels by hand in KiCad, `kicadsync check` re-runs the health check
@@ -26,7 +33,11 @@ user/KiCad — do not regenerate or overwrite it.
 
 Renaming or removing nets in the JSON is handled by `push`: new labels are
 placed and stale ones (names absent from the JSON) are swept automatically,
-including labels the user moved during manual cleanup. Watch push's `[check]`
+including labels the user moved during manual cleanup. Tool-placed labels and
+pin stubs carry ownership UUIDs (`c0de9ace-…`), so when a symbol's pins move —
+a re-rendered symbol, or one repositioned in KiCad — the old labels are swept
+wherever they drifted and re-placed at the pins; hand-placed labels (fresh
+KiCad UUIDs) are never touched. Watch push's `[check]`
 output — `SINGLE-PIN net` findings are almost always a net-name typo in the
 JSON (`LED_EN` vs `LED_ENA` makes two half-nets with no other error).
 

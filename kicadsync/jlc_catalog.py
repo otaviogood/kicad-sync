@@ -2,19 +2,21 @@
 """
 Download and cache the static JLC catalog published by the jlcparts project.
 
-This avoids scraping HTML and keeps a local cache of:
-  - data/index.json
-  - per-category .json.gz payloads
-  - per-category stock tables
+jlcparts data format v4 (2026): a single ``data/manifest.json`` lists merged
+categories, each pointing at one or more ``browse-components-*.jsonl.gz``
+shards (schema header line + one row per part, stock included), with part
+attributes stored as indexes into a shared ``attributes-lut.json.gz``.
 
-The normalized category files are plain JSON objects shaped like:
-{
-  "category": "...",
-  "subcategory": "...",
-  "fetched_at": "...",
-  "schema": [...],
-  "parts": [{...}, {...}]
-}
+This module downloads those files and normalizes them into the same local
+cache layout the rest of kicadsync reads:
+
+  normalized/<slug>.json = {
+    "category": "...",
+    "subcategory": "...",
+    "fetched_at": "...",
+    "schema": [...],
+    "parts": [{...}, {...}]        # attributes expanded from the LUT
+  }
 """
 
 from __future__ import annotations
@@ -27,13 +29,14 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
 
 BASE_URL = "https://yaqwsx.github.io/jlcparts/data"
-INDEX_URL = f"{BASE_URL}/index.json"
+MANIFEST_URL = f"{BASE_URL}/manifest.json"
+ATTRIBUTES_LUT_NAME = "attributes-lut.json.gz"
 from .paths import jlc_cache_dir
 
 DEFAULT_CACHE_DIR = jlc_cache_dir()
@@ -67,6 +70,11 @@ def _normalize_text(value: str) -> str:
 
 
 def _attribute_default_text(value: Any) -> Optional[str]:
+    """First scalar of an attribute value, e.g. 'Basic' from Basic/Extended.
+
+    Handles both the legacy shape (values keyed by 'default') and the v4 LUT
+    shape (values keyed by the attribute's 'primary' name).
+    """
     if isinstance(value, str):
         return value
     if not isinstance(value, dict):
@@ -74,62 +82,116 @@ def _attribute_default_text(value: Any) -> Optional[str]:
     values = value.get("values")
     if not isinstance(values, dict):
         return None
-    default_value = values.get("default")
-    if not isinstance(default_value, list) or not default_value:
-        return None
-    scalar = default_value[0]
-    return scalar if isinstance(scalar, str) else None
+    keys = ["default"]
+    primary = value.get("primary")
+    if isinstance(primary, str):
+        keys.append(primary)
+    for key in keys:
+        scalar_list = values.get(key)
+        if isinstance(scalar_list, list) and scalar_list and isinstance(scalar_list[0], str):
+            return scalar_list[0]
+    return None
 
 
-def _rows_to_parts(schema: List[str], rows: Iterable[List[Any]]) -> List[Dict[str, Any]]:
-    return [dict(zip(schema, row)) for row in rows]
+def parse_browse_shard(
+    text: str,
+    attributes_lut: Sequence[Any],
+    category: str,
+    subcategory: str,
+) -> Tuple[List[str], List[Dict[str, Any]]]:
+    """Parse one browse-components jsonl payload into (schema, parts).
+
+    Line 0 maps field name -> column index; the rest are rows. Attribute
+    indexes are expanded through the shared LUT into the legacy
+    {name: {format, primary, values}} dict shape.
+    """
+    lines = [line for line in text.split("\n") if line.strip()]
+    if not lines:
+        return [], []
+    header = json.loads(lines[0])
+    schema = sorted(header, key=header.get)
+    parts: List[Dict[str, Any]] = []
+    for line in lines[1:]:
+        row = json.loads(line)
+        part = {name: row[idx] for name, idx in header.items() if idx < len(row)}
+        attributes: Dict[str, Any] = {}
+        raw_attributes = part.get("attributes")
+        if isinstance(raw_attributes, list):
+            for lut_index in raw_attributes:
+                if isinstance(lut_index, int) and 0 <= lut_index < len(attributes_lut):
+                    entry = attributes_lut[lut_index]
+                    if isinstance(entry, list) and len(entry) == 2:
+                        attributes[entry[0]] = entry[1]
+        part["attributes"] = attributes
+        part["category"] = category
+        part["subcategory"] = subcategory
+        parts.append(part)
+    return schema, parts
 
 
 @dataclass(frozen=True)
 class CategoryRef:
     category: str
     subcategory: str
-    sourcename: str
+    shards: Tuple[str, ...]
 
     @property
-    def data_url(self) -> str:
-        return f"{BASE_URL}/{self.sourcename}.json.gz"
+    def slug(self) -> str:
+        # "browse-components-<slug>-001.jsonl.gz" -> "<slug>"
+        name = self.shards[0]
+        for prefix in ("browse-components-",):
+            if name.startswith(prefix):
+                name = name[len(prefix):]
+        if name.endswith(".jsonl.gz"):
+            name = name[: -len(".jsonl.gz")]
+        return name.rsplit("-", 1)[0] if name.rsplit("-", 1)[-1].isdigit() else name
 
-    @property
-    def stock_url(self) -> str:
-        return f"{BASE_URL}/{self.sourcename}.stock.json"
+    def shard_url(self, shard: str) -> str:
+        return f"{BASE_URL}/{shard}"
 
 
 class JlcCatalogCache:
     def __init__(self, cache_dir: Path) -> None:
         self.cache_dir = cache_dir
-        self.index_path = cache_dir / "index.json"
+        self.manifest_path = cache_dir / "manifest.json"
         self.raw_dir = cache_dir / "raw"
         self.normalized_dir = cache_dir / "normalized"
-        self.stock_dir = cache_dir / "stock"
+        self._attributes_lut: Optional[List[Any]] = None
 
-    def fetch_index(self) -> Dict[str, Any]:
-        data = json.loads(_fetch_bytes(INDEX_URL).decode("utf-8"))
-        _write_json(self.index_path, data)
+    def fetch_manifest(self) -> Dict[str, Any]:
+        data = json.loads(_fetch_bytes(MANIFEST_URL).decode("utf-8"))
+        _write_json(self.manifest_path, data)
         return data
 
-    def load_index(self) -> Dict[str, Any]:
-        if not self.index_path.exists():
-            return self.fetch_index()
-        return _load_json(self.index_path)
+    def load_manifest(self) -> Dict[str, Any]:
+        if not self.manifest_path.exists():
+            return self.fetch_manifest()
+        return _load_json(self.manifest_path)
+
+    def attributes_lut(self, force: bool = False) -> List[Any]:
+        if self._attributes_lut is not None and not force:
+            return self._attributes_lut
+        lut_path = self.raw_dir / ATTRIBUTES_LUT_NAME
+        if force or not lut_path.exists():
+            _write_bytes(lut_path, _fetch_bytes(f"{BASE_URL}/{ATTRIBUTES_LUT_NAME}"))
+        with gzip.open(lut_path, "rt", encoding="utf-8") as handle:
+            self._attributes_lut = json.load(handle)
+        return self._attributes_lut
 
     def list_categories(self) -> List[CategoryRef]:
-        index = self.load_index()
+        manifest = self.load_manifest()
         refs: List[CategoryRef] = []
-        for category, subcategories in index["categories"].items():
-            for subcategory, meta in subcategories.items():
-                refs.append(
-                    CategoryRef(
-                        category=category,
-                        subcategory=subcategory,
-                        sourcename=meta["sourcename"],
-                    )
+        for entry in manifest["categories"]:
+            shards = tuple(entry.get("browseShards", []))
+            if not shards:
+                continue
+            refs.append(
+                CategoryRef(
+                    category=str(entry["category"]),
+                    subcategory=str(entry.get("subcategory", "")),
+                    shards=shards,
                 )
+            )
         refs.sort(key=lambda item: (item.category, item.subcategory))
         return refs
 
@@ -140,26 +202,23 @@ class JlcCatalogCache:
         raise KeyError(f"Unknown category/subcategory: {category!r} / {subcategory!r}")
 
     def fetch_category(self, ref: CategoryRef, force: bool = False) -> Dict[str, Any]:
-        raw_path = self.raw_dir / f"{ref.sourcename}.json.gz"
-        normalized_path = self.normalized_dir / f"{ref.sourcename}.json"
-        stock_path = self.stock_dir / f"{ref.sourcename}.stock.json"
+        normalized_path = self.normalized_dir / f"{ref.slug}.json"
+        if not force and normalized_path.exists():
+            return _load_json(normalized_path)
 
-        if force or not raw_path.exists():
-            _write_bytes(raw_path, _fetch_bytes(ref.data_url))
-        if force or not stock_path.exists():
-            _write_bytes(stock_path, _fetch_bytes(ref.stock_url))
-
-        with gzip.open(raw_path, "rt", encoding="utf-8") as handle:
-            payload = json.load(handle)
-
-        schema = payload["schema"]
-        parts = _rows_to_parts(schema, payload["components"])
-        stock = _load_json(stock_path)
-        for part in parts:
-            lcsc = part.get("lcsc")
-            part["stock"] = stock.get(lcsc)
-            part["category"] = ref.category
-            part["subcategory"] = ref.subcategory
+        lut = self.attributes_lut()
+        schema: List[str] = []
+        parts: List[Dict[str, Any]] = []
+        for shard in ref.shards:
+            raw_path = self.raw_dir / shard
+            if force or not raw_path.exists():
+                _write_bytes(raw_path, _fetch_bytes(ref.shard_url(shard)))
+            with gzip.open(raw_path, "rt", encoding="utf-8") as handle:
+                shard_schema, shard_parts = parse_browse_shard(
+                    handle.read(), lut, ref.category, ref.subcategory
+                )
+            schema = schema or shard_schema
+            parts.extend(shard_parts)
 
         normalized = {
             "category": ref.category,
@@ -172,14 +231,47 @@ class JlcCatalogCache:
         return normalized
 
     def fetch_all(self, limit: Optional[int] = None, force: bool = False) -> int:
+        if force:
+            self.fetch_manifest()
         refs = self.list_categories()
         if limit is not None:
             refs = refs[:limit]
+        self.attributes_lut(force=force)
         total = len(refs)
         for index, ref in enumerate(refs, start=1):
             print(f"[{index}/{total}] {ref.category} / {ref.subcategory}")
             self.fetch_category(ref, force=force)
+        if limit is None:
+            self._purge_stale_files(refs)
         return total
+
+    def _purge_stale_files(self, refs: Sequence[CategoryRef]) -> None:
+        """Drop cache files that are not part of the current manifest.
+
+        This clears out payloads from the pre-2026 data format (and any
+        categories jlcparts has since removed) so reports never match against
+        stale prices/stock."""
+        expected_raw = {shard for ref in refs for shard in ref.shards} | {ATTRIBUTES_LUT_NAME}
+        expected_normalized = {f"{ref.slug}.json" for ref in refs}
+        removed = 0
+        for path in self.raw_dir.glob("*"):
+            if path.is_file() and path.name not in expected_raw:
+                path.unlink()
+                removed += 1
+        for path in self.normalized_dir.glob("*"):
+            if path.is_file() and path.name not in expected_normalized:
+                path.unlink()
+                removed += 1
+        for legacy in (self.cache_dir / "stock", ):
+            if legacy.is_dir():
+                removed += sum(1 for p in legacy.rglob("*") if p.is_file())
+                shutil.rmtree(legacy)
+        legacy_index = self.cache_dir / "index.json"
+        if legacy_index.exists():
+            legacy_index.unlink()
+            removed += 1
+        if removed:
+            print(f"[fetch-all] removed {removed} stale cache file(s) from previous catalog formats")
 
     def search_downloaded(self, mpn: str, limit: int = 20) -> List[Dict[str, Any]]:
         target = _normalize_text(mpn)
@@ -211,8 +303,12 @@ class JlcCatalogCache:
 
 def _cmd_refresh_index(args: argparse.Namespace) -> int:
     cache = JlcCatalogCache(args.cache_dir)
-    index = cache.fetch_index()
-    print(f"Saved index with {len(index['categories'])} top-level categories to {cache.index_path}")
+    manifest = cache.fetch_manifest()
+    print(
+        f"Saved manifest with {len(manifest['categories'])} categories "
+        f"({manifest.get('totalComponents', '?')} components, "
+        f"built {manifest.get('created', '?')}) to {cache.manifest_path}"
+    )
     return 0
 
 
@@ -267,7 +363,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    refresh_index = subparsers.add_parser("refresh-index", help="Download the latest category index")
+    refresh_index = subparsers.add_parser("refresh-index", help="Download the latest catalog manifest")
     refresh_index.set_defaults(func=_cmd_refresh_index)
 
     list_categories = subparsers.add_parser("list-categories", help="Print category/subcategory pairs")
@@ -279,7 +375,10 @@ def build_parser() -> argparse.ArgumentParser:
     fetch_category.add_argument("--force", action="store_true", help="Re-download even if cached")
     fetch_category.set_defaults(func=_cmd_fetch_category)
 
-    fetch_all = subparsers.add_parser("fetch-all", help="Download every category payload")
+    fetch_all = subparsers.add_parser(
+        "fetch-all",
+        help="Download every category payload (--force also refreshes the manifest and prunes stale files)",
+    )
     fetch_all.add_argument("--limit", type=int, default=None, help="Only fetch the first N categories")
     fetch_all.add_argument("--force", action="store_true", help="Re-download even if cached")
     fetch_all.set_defaults(func=_cmd_fetch_all)
