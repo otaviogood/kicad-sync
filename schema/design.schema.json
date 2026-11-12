@@ -117,7 +117,7 @@
         },
         "notes": {
           "type": "string",
-          "description": "Engineering notes."
+          "description": "Engineering notes, including placement notes."
         },
         "connections": {
           "type": "array",
